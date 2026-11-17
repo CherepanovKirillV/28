@@ -5,16 +5,22 @@
 - **FE-01:** React + TypeScript + Vite; mock JSON по структуре ответа кейса 3.
 - **FE-02:** зафиксированный контракт `answers[]`, `week_id`, 11 полей профиля и ровно 3 гипотезы.
 
-Готовый интерфейс временно сохранён отдельно в `../solutions/frontend-final`.
+## Запуск
 
-## Команды
+Из корня общего репозитория:
 
 ```bash
+cd frontend
 pnpm install
+pnpm run dev
+```
+
+## Проверки
+
+```bash
 pnpm run typecheck
 pnpm test
 pnpm run build
-pnpm run dev
 ```
 
 ## Контракт для backend
