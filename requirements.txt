@@ -1,2 +1,8 @@
 fastapi==0.162.6
 uvicorn==0.54.0
+fastapi==0.162.6
+uvicorn==0.54.0
+pandas
+numpy
+requests
+openai

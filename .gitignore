@@ -1,0 +1,24 @@
+# Виртуальное окружение Python
+.venv/
+venv/
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Секреты — НИКОГДА не коммитить
+api.token
+llm.key
+id_ed25519
+id_ed25519.pub
+yandex_forms_secret.txt
+set_env.sh
+.env
+
+# Данные — не кладём датасеты в репо
+data/
+
+# macOS
+.DS_Store
