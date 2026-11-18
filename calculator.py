@@ -3,8 +3,10 @@
 Расчёт 11 полей профиля из событий одной недели.
 Возвращает {field: {"value": ..., "confidence": ...}}.
 
-Confidence задаётся в _CONFIDENCE. Калибровка — по calibrate.py.
-Стратегия: conf=0 (unknown) лучше, чем conf=0.7 при ошибке (−1 очко).
+Стратегия:
+- _known(field, value): точный ответ, conf из _CONFIDENCE
+- _prior(field): мягкое угадывание при отсутствии данных, conf из _PRIOR_CONFIDENCE
+- unknown_profile(): fallback для main.py, использует _prior
 """
 from __future__ import annotations
 
@@ -31,19 +33,34 @@ _PLACEHOLDER: dict[str, Any] = {
     "movement_index": "50to70",
 }
 
-# Калибровка: обновляй после calibrate.py
+# Калибровка для ТОЧНЫХ ответов (когда данные есть)
 _CONFIDENCE: dict[str, float] = {
-    "chronotype": 0.85,
+    "chronotype": 0.70,
     "weekday_bedtime": 0.00,
     "weekday_wake_time": 0.85,
-    "average_sleep_hours": 0.70,
+    "average_sleep_hours": 0.85,  # Обновлено: accuracy 96%
     "social_jetlag": 0.70,
     "activity_level": 0.85,
     "sedentary_hours": 0.70,
     "training_days": 0.70,
-    "works_from_home": 0.70,
-    "phone_before_sleep": 0.85,
-    "movement_index": 0.70,
+    "works_from_home": 0.55,      # Обновлено: accuracy 55%
+    "phone_before_sleep": 0.70,
+    "movement_index": 0.55,       # Обновлено: accuracy 55%
+}
+
+# Калибровка для SOFT GUESSING (когда данных нет, на основе prior p >= 0.40)
+_PRIOR_CONFIDENCE: dict[str, float] = {
+    "chronotype": 0.5,          # intermediate 40%
+    "weekday_bedtime": 0.0,     # 7% (нет смысла гадать, разброс большой)
+    "weekday_wake_time": 0.0,   # 7% (нет смысла гадать)
+    "average_sleep_hours": 0.0, # 7% (нет смысла гадать)
+    "social_jetlag": 0.5,       # False 50%
+    "activity_level": 0.5,      # medium 40%
+    "sedentary_hours": 0.5,     # gt9 47%
+    "training_days": 0.5,       # 1to2 43%
+    "works_from_home": 0.5,     # False 60%
+    "phone_before_sleep": 0.5,  # False 50%
+    "movement_index": 0.5,      # 50to70 50%
 }
 
 
@@ -51,19 +68,26 @@ def _conf(field: str) -> float:
     return _CONFIDENCE.get(field, 0.5)
 
 
-def _unknown(field: str) -> dict[str, Any]:
-    return {"value": _PLACEHOLDER[field], "confidence": 0.0}
-
-
 def _known(field: str, value: Any) -> dict[str, Any]:
+    """Значение + conf из _CONFIDENCE."""
     return {
         "value": value,
         "confidence": max(0.0, min(1.0, round(_conf(field), 2))),
     }
 
 
+def _prior(field: str) -> dict[str, Any]:
+    """Fallback с мягким угадыванием. conf = _PRIOR_CONFIDENCE[field]."""
+    c = _PRIOR_CONFIDENCE.get(field, 0.0)
+    return {
+        "value": _PLACEHOLDER[field],
+        "confidence": max(0.0, min(1.0, round(c, 2))),
+    }
+
+
 def unknown_profile() -> dict[str, dict[str, Any]]:
-    return {k: _unknown(k) for k in _PLACEHOLDER}
+    """Для main.py fallback: использует prior вместо честного unknown."""
+    return {k: _prior(k) for k in _PLACEHOLDER}
 
 
 def _time_str_to_min(s: str) -> int:
@@ -79,12 +103,15 @@ def _min_to_time_str(m: float) -> str:
 def _daily_steps(week_data: pd.DataFrame, tz: str) -> pd.Series:
     if week_data.empty or "source" not in week_data.columns:
         return pd.Series(dtype=float)
+    
     wear = week_data[week_data["source"] == "wearable"].dropna(subset=["steps"])
     if len(wear) >= 50:
         return wear.groupby(wear["started_at"].dt.tz_convert(tz).dt.date)["steps"].sum()
+    
     phone = week_data[week_data["source"] == "phone"].dropna(subset=["steps"])
     if len(phone) >= 10:
         return phone.groupby(phone["started_at"].dt.tz_convert(tz).dt.date)["steps"].sum()
+    
     return pd.Series(dtype=float)
 
 
@@ -122,6 +149,7 @@ def _compute_sedentary_from_steps(
     wear = week_data[week_data["source"] == "wearable"].copy()
     if wear.empty or "steps" not in wear.columns:
         return None
+    
     wear = wear.dropna(subset=["steps"])
     if wear.empty:
         return None
@@ -167,15 +195,15 @@ def calculate_profile(
         profile["weekday_bedtime"] = _known("weekday_bedtime", _min_to_time_str(bt))
         profile["weekday_wake_time"] = _known("weekday_wake_time", _min_to_time_str(wt))
     else:
-        profile["weekday_bedtime"] = _unknown("weekday_bedtime")
-        profile["weekday_wake_time"] = _unknown("weekday_wake_time")
+        profile["weekday_bedtime"] = _prior("weekday_bedtime")
+        profile["weekday_wake_time"] = _prior("weekday_wake_time")
 
     # 3. average_sleep_hours
     if not valid.empty and valid["sleep_h"].notna().any():
         avg = float(valid["sleep_h"].mean()) * SLEEP_EFFICIENCY
         profile["average_sleep_hours"] = _known("average_sleep_hours", round(avg, 2))
     else:
-        profile["average_sleep_hours"] = _unknown("average_sleep_hours")
+        profile["average_sleep_hours"] = _prior("average_sleep_hours")
 
     # 4. chronotype
     if profile["weekday_wake_time"]["confidence"] > 0:
@@ -187,7 +215,7 @@ def calculate_profile(
         else:
             profile["chronotype"] = _known("chronotype", "intermediate")
     else:
-        profile["chronotype"] = _unknown("chronotype")
+        profile["chronotype"] = _prior("chronotype")
 
     # 5. social_jetlag
     if len(weekdays) >= 2 and len(weekends) >= 1:
@@ -202,7 +230,7 @@ def calculate_profile(
             diff = 24 * 60 - diff
         profile["social_jetlag"] = _known("social_jetlag", bool(diff >= 60))
     else:
-        profile["social_jetlag"] = _unknown("social_jetlag")
+        profile["social_jetlag"] = _prior("social_jetlag")
 
     # 6. activity_level
     daily = _daily_steps(week_data, tz)
@@ -215,18 +243,18 @@ def calculate_profile(
         else:
             profile["activity_level"] = _known("activity_level", "high")
     else:
-        profile["activity_level"] = _unknown("activity_level")
+        profile["activity_level"] = _prior("activity_level")
 
     # 7. sedentary_hours
     sed = _compute_sedentary_from_steps(week_data, tz)
     profile["sedentary_hours"] = (
-        _known("sedentary_hours", sed) if sed else _unknown("sedentary_hours")
+        _known("sedentary_hours", sed) if sed else _prior("sedentary_hours")
     )
 
     # 8. training_days
     tr = _compute_training_days_strict(week_data, tz, daily)
     profile["training_days"] = (
-        _known("training_days", tr[0]) if tr else _unknown("training_days")
+        _known("training_days", tr[0]) if tr else _prior("training_days")
     )
 
     # 9. works_from_home
@@ -245,7 +273,7 @@ def calculate_profile(
         home_days = wh["local"].dt.date.nunique() if not wh.empty else 0
         profile["works_from_home"] = _known("works_from_home", home_days >= 3)
     else:
-        profile["works_from_home"] = _unknown("works_from_home")
+        profile["works_from_home"] = _prior("works_from_home")
 
     # 10. phone_before_sleep
     phone = week_data[week_data["source"] == "phone"] if "source" in week_data.columns else pd.DataFrame()
@@ -259,11 +287,11 @@ def calculate_profile(
             "phone_before_sleep", bool(late_days >= 3)
         )
     else:
-        profile["phone_before_sleep"] = _unknown("phone_before_sleep")
+        profile["phone_before_sleep"] = _prior("phone_before_sleep")
 
     # 11. movement_index
     if profile["activity_level"]["confidence"] == 0.0:
-        profile["movement_index"] = _unknown("movement_index")
+        profile["movement_index"] = _prior("movement_index")
     else:
         score = {"high": 60, "medium": 40, "low": 20}.get(
             profile["activity_level"]["value"], 40
@@ -318,6 +346,7 @@ def extract_nights(
         else:
             cur_last_end = le
             cur_asleep_count += 1
+            
     if cur_start is not None:
         nights.append((cur_start, cur_last_end, cur_asleep_count))
 
