@@ -1,187 +1,315 @@
-import pandas as pd
-import numpy as np
+# calculator.py
+"""
+Расчёт 11 полей профиля из событий одной недели.
+Возвращает словарь {field: {"value": ..., "confidence": ...}}.
+
+Стратегия unknown:
+  Схема строгая, null/"unknown" НЕ принимаются. При отсутствии данных
+  отдаём most-likely placeholder с confidence=0.0 → 0 очков, но схема довольна.
+
+Калибровки:
+  - average_sleep_hours × 0.92: wearables переоценивают сон на 5–10%
+  - weekday_bedtime conf=0.6: сенсор систематически «видит» сон раньше на 30–40 мин
+"""
+from __future__ import annotations
+
 from datetime import timedelta
-from typing import Dict, Any
+from typing import Any
+
+import pandas as pd
 
 ASLEEP_STAGES = {"light", "deep", "rem"}
+SLEEP_EFFICIENCY = 0.92  # калибровка wearable
+SEDENTARY_STEP_THRESHOLD = 50  # шагов за 10 мин: ниже = сидячий
 
-def calculate_profile(week_data: pd.DataFrame, tz: str, week_start: str, week_end: str) -> Dict[str, Any]:
+_PLACEHOLDER: dict[str, Any] = {
+    "chronotype": "intermediate",
+    "weekday_bedtime": "23:00",
+    "weekday_wake_time": "07:00",
+    "average_sleep_hours": 7.5,
+    "social_jetlag": False,
+    "activity_level": "medium",
+    "sedentary_hours": "6to9",
+    "training_days": "1to2",
+    "works_from_home": False,
+    "phone_before_sleep": False,
+    "movement_index": "50to70",
+}
+
+
+def _unknown(field: str) -> dict[str, Any]:
+    return {"value": _PLACEHOLDER[field], "confidence": 0.0}
+
+
+def _known(value: Any, confidence: float) -> dict[str, Any]:
+    return {"value": value, "confidence": max(0.0, min(1.0, round(confidence, 2)))}
+
+
+def unknown_profile() -> dict[str, dict[str, Any]]:
+    return {k: _unknown(k) for k in _PLACEHOLDER}
+
+
+def _time_str_to_min(s: str) -> int:
+    h, m = s.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _min_to_time_str(m: float) -> str:
+    total = int(round(m)) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _daily_steps(week_data: pd.DataFrame, tz: str) -> pd.Series:
+    if week_data.empty or "source" not in week_data.columns:
+        return pd.Series(dtype=float)
+    wear = week_data[week_data["source"] == "wearable"].dropna(subset=["steps"])
+    if len(wear) >= 50:
+        return wear.groupby(wear["started_at"].dt.tz_convert(tz).dt.date)["steps"].sum()
+    phone = week_data[week_data["source"] == "phone"].dropna(subset=["steps"])
+    if len(phone) >= 10:
+        return phone.groupby(phone["started_at"].dt.tz_convert(tz).dt.date)["steps"].sum()
+    return pd.Series(dtype=float)
+
+
+def _compute_training_days_strict(
+    week_data: pd.DataFrame, tz: str, daily: pd.Series
+) -> dict[str, Any]:
     """
-    Рассчитывает 11 полей профиля для одной недели.
-    Возвращает словарь, готовый для вставки в JSON-ответ.
+    Тренировка = УСТОЙЧИВЫЙ bpm ≥ 120 (2+ подряд сэмпла = 20 мин)
+                ИЛИ steps >= 12000 в день.
+    Почему 2 подряд: один всплеск 120 = подъём по лестнице, не тренировка.
+    Почему 12000: 10000 — порог «активного дня», а тренировка — это сверх нормы.
     """
-    profile = {}
-    
-    # 1. Подготовка данных по сну (выделяем "ночи")
+    wear = week_data[week_data["source"] == "wearable"].copy()
+    if wear.empty or "bpm" not in wear.columns or not wear["bpm"].notna().any():
+        # нет bpm — только по шагам
+        if daily.empty:
+            return _unknown("training_days")
+        high_step_days = set(daily[daily >= 12000].index)
+    else:
+        wear = wear.dropna(subset=["bpm"]).sort_values("started_at")
+        wear["local_date"] = wear["started_at"].dt.tz_convert(tz).dt.date
+        # устойчивый: текущий И следующий >= 120
+        wear["bpm_hi"] = wear["bpm"] >= 120
+        wear["bpm_hi_next"] = wear["bpm_hi"].shift(-1, fill_value=False)
+        sustained = wear[wear["bpm_hi"] & wear["bpm_hi_next"]]
+        sustained_days = set(sustained["local_date"])
+
+        high_step_days = set(daily[daily >= 12000].index) if not daily.empty else set()
+        high_step_days |= sustained_days
+
+    n = len(high_step_days)
+    if n == 0:
+        value = "0"
+    elif n <= 2:
+        value = "1to2"
+    else:
+        value = "3plus"
+    return _known(value, 0.7)
+
+
+def _compute_sedentary_from_steps(
+    week_data: pd.DataFrame, tz: str
+) -> dict[str, Any]:
+    """
+    sedentary_hours — часы БОДРСТВОВАНИЯ с низкими шагами (<50 за 10-мин).
+    НЕ производная от activity_level: можно много ходить и много сидеть.
+    """
+    wear = week_data[week_data["source"] == "wearable"].copy()
+    if wear.empty or "steps" not in wear.columns:
+        return _unknown("sedentary_hours")
+    wear = wear.dropna(subset=["steps"])
+    if wear.empty:
+        return _unknown("sedentary_hours")
+
+    wear["is_sleep"] = wear["sleep_stage"].isin(ASLEEP_STAGES)
+    awake = wear[~wear["is_sleep"]]
+    if len(awake) < 20:
+        return _unknown("sedentary_hours")
+
+    awake_local = awake["started_at"].dt.tz_convert(tz)
+    n_days = awake_local.dt.date.nunique()
+    sedentary_samples = (awake["steps"] < SEDENTARY_STEP_THRESHOLD).sum()
+    per_day = sedentary_samples * 10 / 60 / max(n_days, 1)
+
+    if per_day < 6:
+        return _known("lt6", 0.7)
+    elif per_day <= 9:
+        return _known("6to9", 0.7)
+    else:
+        return _known("gt9", 0.7)
+
+
+def calculate_profile(
+    week_data: pd.DataFrame, tz: str, week_start: str, week_end: str
+) -> dict[str, Any]:
+    profile: dict[str, Any] = {}
+
+    # ========== 1. Сон ==========
     nights = extract_nights(week_data, tz, week_start, week_end)
-    # boundary = ночи, обрезанные началом или концом недели (их исключаем из средних значений)
-    valid_nights = nights[~nights["is_boundary"]]
-    weekdays = valid_nights[valid_nights["date_local"].apply(lambda d: d.weekday() < 5)]
-    weekends = valid_nights[valid_nights["date_local"].apply(lambda d: d.weekday() >= 5)]
-    
-    # 2. weekday_bedtime и weekday_wake_time (медиана отбоя и подъёма в будни)
+    valid = nights[~nights["is_boundary"]] if not nights.empty else nights
+    weekdays = (
+        valid[valid["date_local"].apply(lambda d: d.weekday() < 5)]
+        if not valid.empty else valid
+    )
+    weekends = (
+        valid[valid["date_local"].apply(lambda d: d.weekday() >= 5)]
+        if not valid.empty else valid
+    )
+
+    # ========== 2. weekday_bedtime / wake ==========
     if len(weekdays) >= 2:
-        # Переводим время в минуты от 00:00 для корректного расчёта медианы
-        median_bedtime_min = weekdays["bedtime"].apply(lambda ts: (ts.hour * 60 + ts.minute)).median()
-        median_wake_min = weekdays["waketime"].apply(lambda ts: ts.hour * 60 + ts.minute).median()
-        
-        bedtime_str = f"{int(median_bedtime_min // 60):02d}:{int(median_bedtime_min % 60):02d}"
-        wake_str = f"{int(median_wake_min // 60):02d}:{int(median_wake_min % 60):02d}"
-        
-        profile["weekday_bedtime"] = {"value": bedtime_str, "confidence": 0.8 if len(weekdays) >= 3 else 0.6}
-        profile["weekday_wake_time"] = {"value": wake_str, "confidence": 0.8 if len(weekdays) >= 3 else 0.6}
+        bt = weekdays["bedtime"].apply(lambda ts: ts.hour * 60 + ts.minute).median()
+        wt = weekdays["waketime"].apply(lambda ts: ts.hour * 60 + ts.minute).median()
+        # bedtime: сенсор систематически раньше truth → ниже уверенность
+        profile["weekday_bedtime"] = _known(_min_to_time_str(bt), 0.6)
+        # wake: сенсор точен (±2 мин) → 0.8
+        profile["weekday_wake_time"] = _known(_min_to_time_str(wt), 0.8)
     else:
-        # ЗОЛОТОЕ ПРАВИЛО: лучше unknown, чем угадывать и получить -1 балл!
-        profile["weekday_bedtime"] = {"value": "unknown", "confidence": 0.0}
-        profile["weekday_wake_time"] = {"value": "unknown", "confidence": 0.0}
+        profile["weekday_bedtime"] = _unknown("weekday_bedtime")
+        profile["weekday_wake_time"] = _unknown("weekday_wake_time")
 
-    # 3. sleep_duration (средняя продолжительность сна в часах)
-    if not valid_nights.empty:
-        avg_sleep = valid_nights["sleep_h"].mean()
-        profile["sleep_duration"] = {"value": round(avg_sleep, 1), "confidence": 0.8 if len(valid_nights) >= 3 else 0.5}
+    # ========== 3. average_sleep_hours (с калибровкой) ==========
+    if not valid.empty and valid["sleep_h"].notna().any():
+        avg_raw = float(valid["sleep_h"].mean())
+        avg_cal = avg_raw * SLEEP_EFFICIENCY  # wearable overestimate
+        profile["average_sleep_hours"] = _known(round(avg_cal, 2), 0.65)
     else:
-        profile["sleep_duration"] = {"value": "unknown", "confidence": 0.0}
+        profile["average_sleep_hours"] = _unknown("average_sleep_hours")
 
-    # 4. chronotype (хронотип)
-    if profile["weekday_wake_time"]["value"] != "unknown":
-        wake_min = int(profile["weekday_wake_time"]["value"].split(":")[0]) * 60 + int(profile["weekday_wake_time"]["value"].split(":")[1])
-        if wake_min < 390:  # До 06:30
-            profile["chronotype"] = {"value": "early", "confidence": 0.7}
-        elif wake_min > 480:  # После 08:00
-            profile["chronotype"] = {"value": "late", "confidence": 0.7}
+    # ========== 4. chronotype ==========
+    if profile["weekday_wake_time"]["confidence"] > 0:
+        wake_min = _time_str_to_min(profile["weekday_wake_time"]["value"])
+        if wake_min < 390:
+            profile["chronotype"] = _known("early", 0.7)
+        elif wake_min > 480:
+            profile["chronotype"] = _known("late", 0.7)
         else:
-            profile["chronotype"] = {"value": "intermediate", "confidence": 0.8}
+            profile["chronotype"] = _known("intermediate", 0.8)
     else:
-        profile["chronotype"] = {"value": "unknown", "confidence": 0.0}
+        profile["chronotype"] = _unknown("chronotype")
 
-    # 5. social_jetlag (сдвиг середины сна между буднями и выходными >= 1 часа)
-    if len(weekdays) >= 2 and len(weekends) >= 2:
-        # Середина сна = время отбоя + половина продолжительности сна
-        mid_week = weekdays["bedtime"].apply(lambda ts: (ts.hour * 60 + ts.minute) + (weekdays["sleep_h"].mean() * 60) / 2).median()
-        mid_weekend = weekends["bedtime"].apply(lambda ts: (ts.hour * 60 + ts.minute) + (weekends["sleep_h"].mean() * 60) / 2).median()
-        
-        diff = abs(mid_week - mid_weekend)
-        # Учитываем переход через полночь (например, 01:00 и 23:00)
+    # ========== 5. social_jetlag (≥1 weekend достаточно) ==========
+    if len(weekdays) >= 2 and len(weekends) >= 1:
+        def _midpoint(row):
+            bt_norm = (row["bedtime"].hour * 60 + row["bedtime"].minute - 18 * 60) % (24 * 60)
+            return bt_norm + row["sleep_h"] * 60 / 2
+
+        mid_wd = weekdays.apply(_midpoint, axis=1).median()
+        mid_we = weekends.apply(_midpoint, axis=1).median()
+        diff = abs(mid_wd - mid_we)
         if diff > 12 * 60:
             diff = 24 * 60 - diff
-            
-        profile["social_jetlag"] = {"value": bool(diff >= 60), "confidence": 0.7}
+        # 1 weekend ночь → уверенность 0.5; 2+ → 0.7
+        conf = 0.7 if len(weekends) >= 2 else 0.5
+        profile["social_jetlag"] = _known(bool(diff >= 60), conf)
     else:
-        profile["social_jetlag"] = {"value": "unknown", "confidence": 0.0}
+        profile["social_jetlag"] = _unknown("social_jetlag")
 
-    # 6. activity_level (уровень активности по средним шагам в день)
-    wearable = week_data[week_data["source"] == "wearable"]
-    if not wearable.empty:
-        daily_steps = wearable.groupby(wearable["started_at"].dt.tz_convert(tz).dt.date)["steps"].sum()
-        avg_steps = daily_steps.mean()
+    # ========== 6. activity_level ==========
+    daily = _daily_steps(week_data, tz)
+    if len(daily) >= 3:
+        avg_steps = float(daily.mean())
         if avg_steps < 5000:
-            profile["activity_level"] = {"value": "low", "confidence": 0.8}
+            profile["activity_level"] = _known("low", 0.8)
         elif avg_steps < 10000:
-            profile["activity_level"] = {"value": "medium", "confidence": 0.8}
+            profile["activity_level"] = _known("medium", 0.8)
         else:
-            profile["activity_level"] = {"value": "high", "confidence": 0.8}
+            profile["activity_level"] = _known("high", 0.8)
     else:
-        profile["activity_level"] = {"value": "unknown", "confidence": 0.0}
+        profile["activity_level"] = _unknown("activity_level")
 
-    # 7. sedentary_hours (эвристика на основе уровня активности)
-    # Если точных данных о сидении нет, используем обратную корреляцию с шагами
-    if profile["activity_level"]["value"] == "low":
-        profile["sedentary_hours"] = {"value": ">9", "confidence": 0.6}
-    elif profile["activity_level"]["value"] == "high":
-        profile["sedentary_hours"] = {"value": "<6", "confidence": 0.6}
-    else:
-        profile["sedentary_hours"] = {"value": "6-9", "confidence": 0.6}
+    # ========== 7. sedentary_hours — напрямую из шагов ==========
+    profile["sedentary_hours"] = _compute_sedentary_from_steps(week_data, tz)
 
-    # 8. workout_days (дни с высокой нагрузкой: пульс > 120 или шаги > 10000)
-    if not wearable.empty:
-        daily_max_bpm = wearable.groupby(wearable["started_at"].dt.tz_convert(tz).dt.date)["bpm"].max()
-        workout_days_count = (daily_max_bpm > 120).sum()
-        if workout_days_count == 0:
-            profile["workout_days"] = {"value": "0", "confidence": 0.7}
-        elif workout_days_count <= 2:
-            profile["workout_days"] = {"value": "1-2", "confidence": 0.7}
+    # ========== 8. training_days — строгая эвристика ==========
+    profile["training_days"] = _compute_training_days_strict(week_data, tz, daily)
+
+    # ========== 9. works_from_home ==========
+    smart_home = week_data[week_data["source"] == "smart_home"] if "source" in week_data.columns else pd.DataFrame()
+    if not smart_home.empty and "present" in smart_home.columns:
+        sh = smart_home.copy()
+        sh["local"] = sh["started_at"].dt.tz_convert(tz)
+        sh["local_hour"] = sh["local"].dt.hour
+        sh["is_weekday"] = sh["local"].dt.weekday < 5
+        work_hours = sh[
+            sh["is_weekday"]
+            & (sh["local_hour"] >= 10)
+            & (sh["local_hour"] < 18)
+            & (sh["present"] == True)
+        ]
+        if not work_hours.empty:
+            home_days = work_hours["local"].dt.date.nunique()
         else:
-            profile["workout_days"] = {"value": "3+", "confidence": 0.7}
+            home_days = 0
+        profile["works_from_home"] = _known(home_days >= 3, 0.6)
     else:
-        profile["workout_days"] = {"value": "unknown", "confidence": 0.0}
+        profile["works_from_home"] = _unknown("works_from_home")
 
-    # 9. work_from_home (присутствие дома в рабочее время 10:00–18:00 по будням)
-    smart_home = week_data[week_data["source"] == "smart_home"]
-    if not smart_home.empty:
-        sh_local = smart_home.copy()
-        sh_local["local_hour"] = sh_local["started_at"].dt.tz_convert(tz).dt.hour
-        sh_local["is_weekday"] = sh_local["started_at"].dt.tz_convert(tz).dt.weekday < 5
-        
-        work_hours_presence = sh_local[(sh_local["is_weekday"]) & (sh_local["local_hour"] >= 10) & (sh_local["local_hour"] < 18)]
-        # Если есть устойчивые записи о присутствии в это время
-        if len(work_hours_presence) > 10: 
-            profile["work_from_home"] = {"value": True, "confidence": 0.6}
+    # ========== 10. phone_before_sleep ==========
+    phone = week_data[week_data["source"] == "phone"] if "source" in week_data.columns else pd.DataFrame()
+    if not phone.empty and "screen_minutes" in phone.columns:
+        ph = phone.copy()
+        ph["local"] = ph["started_at"].dt.tz_convert(tz)
+        ph["local_hour"] = ph["local"].dt.hour
+        late = ph[(ph["local_hour"] >= 23) & (ph["screen_minutes"] > 0)]
+        late_days = late["local"].dt.date.nunique() if not late.empty else 0
+        if late_days >= 3:
+            profile["phone_before_sleep"] = _known(True, 0.8)
         else:
-            profile["work_from_home"] = {"value": False, "confidence": 0.6}
+            profile["phone_before_sleep"] = _known(False, 0.7)
     else:
-        profile["work_from_home"] = {"value": "unknown", "confidence": 0.0}
+        profile["phone_before_sleep"] = _unknown("phone_before_sleep")
 
-    # 10. phone_before_bed (экран после 23:00 ≥ 3 дней)
-    phone = week_data[week_data["source"] == "phone"]
-    if not phone.empty:
-        phone_local = phone.copy()
-        phone_local["local_hour"] = phone_local["started_at"].dt.tz_convert(tz).dt.hour
-        late_screen = phone_local[(phone_local["local_hour"] >= 23) & (phone_local["screen_minutes"] > 0)]
-        late_screen_days = late_screen.groupby(late_screen["started_at"].dt.tz_convert(tz).dt.date).size()
-        
-        if len(late_screen_days) >= 3:
-            profile["phone_before_bed"] = {"value": True, "confidence": 0.8}
-        else:
-            profile["phone_before_bed"] = {"value": False, "confidence": 0.7}
+    # ========== 11. movement_index — от activity + training ==========
+    if profile["activity_level"]["confidence"] == 0.0:
+        profile["movement_index"] = _unknown("movement_index")
     else:
-        profile["phone_before_bed"] = {"value": "unknown", "confidence": 0.0}
-
-    # 11. movement_index (упрощённая формула на основе шагов и тренировок)
-    # Граница попадает в верхний интервал (например, 50 -> "50-70")
-    if profile["activity_level"]["value"] != "unknown":
         score = 0
-        if profile["activity_level"]["value"] == "high": score += 60
-        elif profile["activity_level"]["value"] == "medium": score += 40
-        else: score += 20
-        
-        if profile["workout_days"]["value"] == "3+": score += 30
-        elif profile["workout_days"]["value"] == "1-2": score += 15
-        
-        score = min(100, score) # Ограничиваем максимумом 100
-        
-        if score >= 85:
-            profile["movement_index"] = {"value": ">=85", "confidence": 0.7}
-        elif score >= 70:
-            profile["movement_index"] = {"value": "70-85", "confidence": 0.7}
-        elif score >= 50:
-            profile["movement_index"] = {"value": "50-70", "confidence": 0.7}
+        if profile["activity_level"]["value"] == "high":
+            score += 60
+        elif profile["activity_level"]["value"] == "medium":
+            score += 40
         else:
-            profile["movement_index"] = {"value": "<50", "confidence": 0.7}
-    else:
-        profile["movement_index"] = {"value": "unknown", "confidence": 0.0}
+            score += 20
+
+        train = profile["training_days"]
+        if train["confidence"] > 0:
+            if train["value"] == "3plus":
+                score += 30
+            elif train["value"] == "1to2":
+                score += 15
+
+        score = min(100, score)
+        if score >= 85:
+            profile["movement_index"] = _known("85plus", 0.7)
+        elif score >= 70:
+            profile["movement_index"] = _known("70to85", 0.7)
+        elif score >= 50:
+            profile["movement_index"] = _known("50to70", 0.7)
+        else:
+            profile["movement_index"] = _known("lt50", 0.7)
 
     return profile
 
 
-def extract_nights(w: pd.DataFrame, tz: str, week_start: str, week_end: str) -> pd.DataFrame:
-    """
-    Вспомогательная функция: склеивает стадии сна в полноценные "ночи".
-    Разрыв > 60 минут считается новой ночью.
-    """
+def extract_nights(
+    w: pd.DataFrame, tz: str, week_start: str, week_end: str
+) -> pd.DataFrame:
     cols = ["date_local", "bedtime", "waketime", "time_in_bed_h", "sleep_h", "is_boundary"]
-    if w.empty or not w["sleep_stage"].notna().any():
+    if w.empty or "sleep_stage" not in w.columns or not w["sleep_stage"].notna().any():
         return pd.DataFrame(columns=cols)
-    
+
     w = w.sort_values("started_at").copy()
     w["is_asleep"] = w["sleep_stage"].isin(ASLEEP_STAGES)
     w["local_start"] = w["started_at"].dt.tz_convert(tz)
-    w["local_end"] = w["local_start"] + pd.Timedelta(minutes=10) # Шаг сэмпла 10 мин
-    
-    nights = []
+    w["local_end"] = w["local_start"] + pd.Timedelta(minutes=10)
+
+    nights: list[tuple] = []
     cur_start = None
     cur_last_end = None
     cur_asleep_count = 0
-    
+
     for _, row in w.iterrows():
         if not row["is_asleep"]:
             continue
@@ -189,7 +317,6 @@ def extract_nights(w: pd.DataFrame, tz: str, week_start: str, week_end: str) -> 
         if cur_start is None:
             cur_start, cur_last_end, cur_asleep_count = ls, le, 1
             continue
-        
         gap_min = (ls - cur_last_end).total_seconds() / 60
         if gap_min > 60:
             nights.append((cur_start, cur_last_end, cur_asleep_count))
@@ -197,25 +324,23 @@ def extract_nights(w: pd.DataFrame, tz: str, week_start: str, week_end: str) -> 
         else:
             cur_last_end = le
             cur_asleep_count += 1
-            
     if cur_start is not None:
         nights.append((cur_start, cur_last_end, cur_asleep_count))
-        
+
     rows = []
     week_start_dt = pd.to_datetime(week_start).date()
     week_end_dt = pd.to_datetime(week_end).date()
     last_day = week_end_dt - timedelta(days=1)
-    
+
     for s, e, asleep_count in nights:
         tib_h = (e - s).total_seconds() / 3600
         sleep_h = asleep_count * 10 / 60
         d = s.date()
-        
-        # Флаг границы: ночь прижата к началу или концу недели (может быть обрезана)
-        boundary = (d == week_start_dt and s.hour < 6) or \
-                   (e.date() >= week_end_dt) or \
-                   (d == last_day and s.hour >= 20)
-                   
+        boundary = (
+            (d == week_start_dt and s.hour < 6)
+            or (e.date() >= week_end_dt)
+            or (d == last_day and s.hour >= 20)
+        )
         rows.append({
             "date_local": d,
             "bedtime": s,
@@ -224,4 +349,7 @@ def extract_nights(w: pd.DataFrame, tz: str, week_start: str, week_end: str) -> 
             "sleep_h": round(sleep_h, 2),
             "is_boundary": boundary,
         })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
     return pd.DataFrame(rows)
