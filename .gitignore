@@ -22,3 +22,8 @@ data/
 
 # macOS
 .DS_Store
+
+# Dev-утилиты (не идут в образ)
+fetch_dev.py
+analyze_dev.py
+explore.py
