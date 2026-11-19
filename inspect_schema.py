@@ -5,7 +5,7 @@
 import json
 from pathlib import Path
 
-DATA = Path("data/dev.json")
+DATA = Path("data/case3_dev.json")
 
 with DATA.open(encoding="utf-8") as f:
     data = json.load(f)

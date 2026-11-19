@@ -1,17 +1,18 @@
-#!/usr/bin/env python3
 """
 calibrate.py v2 — калибровка уверенности + what-if анализ.
 
 Что нового по сравнению с v1:
-  1. compute_profiles() с переопределением _CONFIDENCE / _PRIOR_CONFIDENCE / _PLACEHOLDER
-     — можно прогнать несколько сценариев, не трогая файл calculator.py.
-  2. Сценарий B: включить weekday_bedtime soft guess (conf=0.5).
-  3. Сценарий C: то же + оптимальный placeholder для ±30 мин.
-  4. Итоговая таблица: A vs B vs C и рекомендация.
+    1. compute_profiles() с переопределением _CONFIDENCE / _PRIOR_CONFIDENCE / _PLACEHOLDER
+    — можно прогнать несколько сценариев, не трогая файл calculator.py.
+    2. Сценарий B: включить weekday_bedtime soft guess (conf=0.5).
+    3. Сценарий C: то же + оптимальный placeholder для ±30 мин.
+    4. Итоговая таблица: A vs B vs C и рекомендация.
 
 Запуск:
-    env28
-    python calibrate.py
+    echo $PROJECT_28 выводит /mnt/c/Users/Траоре/Desktop/281
+    env28 alias env28='cd "$PROJECT_28" && source .venv/bin/activate &&
+    source set_env.sh && echo "28 env: ready (team28, venv active)"'
+    python3 calibrate.py
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from pathlib import Path
 import explore_dev as ex
 import calculator as calc
 
-DATA_PATH = Path(__file__).resolve().parent / "data" / "dev.json"
+DATA_PATH = Path(__file__).resolve().parent / "data" / "case3_dev.json.json"
 
 # Допуски из контракта кейса
 TOL_TIME_MIN = 30
@@ -191,14 +192,14 @@ def main() -> None:
     print(f"  СЦЕНАРИЙ A: BASELINE (как сейчас)")
     print(f"{'=' * 90}")
     print(f"  {'field':24s} {'n':>3s} {'cor':>4s} {'wrong':>6s} {'unk':>4s} "
-          f"{'acc':>7s} {'pts':>8s}")
+        f"{'acc':>7s} {'pts':>8s}")
     print("-" * 90)
     for field in sorted(stats_a):
         s = stats_a[field]
         answered = s["n"] - s["unknown"]
         acc = s["correct"] / answered if answered else 0.0
         print(f"  {field:24s} {s['n']:>3d} {s['correct']:>4d} {s['wrong']:>6d} "
-              f"{s['unknown']:>4d} {acc:>6.1%} {s['pts']:>+8.2f}")
+            f"{s['unknown']:>4d} {acc:>6.1%} {s['pts']:>+8.2f}")
     print("-" * 90)
     print(f"  {'ИТОГО':24s} {'':>3s} {'':>4s} {'':>6s} {'':>4s} {'':>7s} {total_a:>+8.2f}")
 
@@ -229,7 +230,7 @@ def main() -> None:
         answered = s["n"] - s["unknown"]
         acc = s["correct"] / answered if answered else 0.0
         print(f"    {field:24s}  {stats_a[field]['pts']:>+7.2f} → {s['pts']:>+7.2f}  "
-              f"(Δ {delta:>+6.2f} | acc={acc:>5.1%} | cor={s['correct']:>2d} wrong={s['wrong']:>2d} unk={s['unknown']})")
+            f"(Δ {delta:>+6.2f} | acc={acc:>5.1%} | cor={s['correct']:>2d} wrong={s['wrong']:>2d} unk={s['unknown']})")
 
     print(f"\n  ИТОГО: {total_a:+.2f} → {total_b:+.2f}  (Δ {total_b - total_a:+.2f})")
 

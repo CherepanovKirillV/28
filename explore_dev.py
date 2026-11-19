@@ -1,5 +1,5 @@
 """
-Исследование dev-набора кейса 3 — «идеальная» версия.
+Исследование case3_dev-набора — «идеальная» версия.
 
 Что делает:
 - Загружает data/dev.json (путь относительно файла, не CWD)
@@ -9,8 +9,10 @@
 - Сверяет наши расчёты с reference
 
 Запуск:
-    env28
-    python explore_dev.py
+    echo $PROJECT_28 выводит /mnt/c/Users/Траоре/Desktop/281
+    env28 alias env28='cd "$PROJECT_28" && source .venv/bin/activate &&
+    source set_env.sh && echo "28 env: ready (team28, venv active)"'
+    python3 explore_dev.py
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-DATA_PATH = Path(__file__).resolve().parent / "data" / "dev.json"
+DATA_PATH = Path(__file__).resolve().parent / "data" / "case3_dev.json"
 
 ASLEEP_STAGES = {"light", "deep", "rem"}
 SAMPLE_MIN = 10  # wearable_sample шаг = 10 минут

@@ -1,7 +1,6 @@
 """
-Локальная проверка ответа /run на соответствие profile_fields_schema.
-Схема описывает ОДИН профиль (11 полей), а не весь ответ {weeks: [...]}.
-Поэтому валидируем каждую неделю отдельно.
+Валидация ответа /run против Case3Answers.schema.json.
+Схема описывает ВЕСЬ ответ {weeks: [...]}, поэтому валидируем response целиком.
 """
 import json
 import sys
@@ -10,71 +9,53 @@ from pathlib import Path
 from jsonschema import validate, ValidationError
 
 RESPONSE_PATH = Path("data") / "run_response.json"
-DEV_PATH = Path("data") / "dev.json"
+SCHEMA_PATH = Path("data") / "Answers.schema.json"   # положи файл схемы сюда
 
 
 def load_schema() -> dict:
-    """Достает profile_fields_schema из dev.json."""
-    with DEV_PATH.open(encoding="utf-8") as f:
-        data = json.load(f)
-    return data["dataset"]["profile_fields_schema"]
+    """Читает Case3Answers.schema.json как готовую JSON Schema."""
+    with SCHEMA_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
 
 
 def validate_response(response: dict) -> bool:
-    """
-    Проверяет:
-    1. В ответе есть массив 'weeks'.
-    2. Каждая неделя имеет 'profile'.
-    3. Каждый 'profile' соответствует profile_fields_schema.
-    """
-    # ── 1. Базовая структура ответа ─────────────────────
     if "weeks" not in response:
         print("❌ В ответе нет ключа 'weeks'")
         return False
-    weeks = response["weeks"]
-    if not isinstance(weeks, list):
-        print("❌ 'weeks' должен быть массивом")
-        return False
-    if len(weeks) == 0:
-        print("❌ 'weeks' пустой")
+    if not isinstance(response["weeks"], list) or not response["weeks"]:
+        print("❌ 'weeks' пустой или не массив")
         return False
 
     schema = load_schema()
-
-    # ── 2. Каждая неделя — отдельная проверка ───────────
-    errors = 0
-    for i, week in enumerate(weeks):
-        rid = week.get("record_id", f"week_{i}")
-        if "profile" not in week:
-            print(f"❌ {rid}: нет ключа 'profile'")
-            errors += 1
-            continue
-        try:
-            validate(instance=week["profile"], schema=schema)
-        except ValidationError as e:
-            print(f"❌ {rid}: {e.message}")
-            path = ".".join(str(p) for p in e.path) if e.path else "(корень профиля)"
-            print(f"   Путь: {path}")
-            errors += 1
-            # Подсказка для самого частого случая
-            if "is not valid under any of the given schemas" in str(e.message):
-                print(f"   💡 Возможно, поле обёрнуто в {{value, confidence}},")
-                print(f"      а схема ждёт плоское значение. См. ФИКС №2.")
-
-    # ── 3. Итог ─────────────────────────────────────────
-    if errors == 0:
-        print(f"✅ Валидация пройдена: все {len(weeks)} профилей соответствуют схеме")
+    try:
+        validate(instance=response, schema=schema)
+        print(f"✅ Валидация пройдена: {len(response['weeks'])} недель соответствуют Case3Answers.schema.json")
         return True
-    print(f"\n❌ Провалено {errors} из {len(weeks)} недель")
-    return False
+    except ValidationError as e:
+        path = ".".join(str(p) for p in e.path) if e.path else "(корень)"
+        print(f"❌ {e.message}")
+        print(f"   Путь: {path}")
+        msg = str(e.message).lower()
+        if "additional properties" in msg:
+            print("   💡 Лишний ключ. В неделе допустимы только record_id, profile, hypotheses.")
+        elif "is not of type 'object'" in msg or "is not valid under any" in msg:
+            print("   💡 Скорее всего, profile разделан. Схема ждёт {value, confidence}.")
+        elif "is not of type 'string'" in msg:
+            print("   💡 Вероятно, conf=0 должен давать 'unknown', а не число/bool.")
+        return False
 
 
 def main():
     if not RESPONSE_PATH.exists():
-        print(f"Файл {RESPONSE_PATH} не найден. Сначала сгенерируй ответ.")
+        print(f"❌ {RESPONSE_PATH} не найден. Сначала: python generate_local_response.py")
         sys.exit(1)
+    if not SCHEMA_PATH.exists():
+        print(f"❌ {SCHEMA_PATH} не найден. Положи Case3Answers.schema.json в data/")
+        sys.exit(1)
+
     with RESPONSE_PATH.open(encoding="utf-8") as f:
         response = json.load(f)
+
     ok = validate_response(response)
     sys.exit(0 if ok else 1)
 

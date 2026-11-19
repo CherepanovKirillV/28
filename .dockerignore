@@ -8,15 +8,14 @@ __pycache__/
 .git/
 .gitignore
 *.md
-# calibrate.py
+# tests/
 # analyze_missing.py
-# explore_dev.py
-# fetch_dev.py
-# local_test.py
-# generate_local_response.py
+# fetch_dev.py                    
+# generate_local_response.py  
+# token_monitor.py        
+# inspect_schema.py           
 # validate_local.py
-# inspect_schema.py
-# token_monitor.py
+# explore_dev.py
 .DS_Store
 *.log
 

@@ -11,6 +11,11 @@
 Запуск с Docker (из bash):
     bash tests/demo_memory_docker.sh
 """
+# ── ФИКС импорта: добавляем корень проекта в sys.path ──
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# ───────────────────────────────────────────────────────
 import gc
 import json
 import sys

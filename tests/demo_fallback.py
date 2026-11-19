@@ -6,6 +6,12 @@
 3. Симуляция «LLM вернула медицинский термин» → пост-фильтр вырезает.
 4. Симуляция «LLM вернула 2 гипотезы вместо 3» → добиваем до 3.
 """
+# ── ФИКС импорта: добавляем корень проекта в sys.path ──
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# ───────────────────────────────────────────────────────
+
 from unittest.mock import patch
 
 import llm_generator

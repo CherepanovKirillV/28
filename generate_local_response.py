@@ -1,23 +1,26 @@
 """
-Локальная эмуляция /run без HTTP: читает data/dev.json,
+Локальная эмуляция /run без HTTP: читает data/case3_dev.json,
 прогоняет calculator + llm_generator и сохраняет data/run_response.json
-в ТОМ ЖЕ формате, что отдаёт main.py.
+в ТОМ ЖЕ формате, что отдаёт main.py (Case3Answers.schema.json).
 
-КЛЮЧЕВОЙ МОМЕНТ: используем _pack_week из main.py, чтобы формат
-был гарантированно идентичен боевому ответу /run.
+КЛЮЧЕВОЙ МОМЕНТ: используем _pack_week из main.py — единый источник правды
+для формата ответа. Никакой дублирующей логики.
 """
-import json
+# ── ФИКС импорта: добавляем корень проекта в sys.path ──
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# ───────────────────────────────────────────────────────
+
+import json
 
 import pandas as pd
 
 import calculator
 import llm_generator
-# Переиспользуем ту же функцию упаковки, что и в main.py.
-# Импорт main.py создаёт объект FastAPI, но НЕ запускает сервер — это безопасно.
 from main import _pack_week
 
-DATA_PATH = Path("data") / "dev.json"
+DATA_PATH = Path("data") / "case3_dev.json"
 OUT_PATH = Path("data") / "run_response.json"
 
 
@@ -69,7 +72,6 @@ def main():
             if not llm_generator.validate_output(profile, hypotheses):
                 hypotheses = llm_generator._get_fallback_hypotheses(profile)
 
-            # ← ГЛАВНОЕ: та же упаковка, что в main.py — profile плоский
             result_weeks.append(_pack_week(rid, profile, hypotheses))
 
         except Exception as e:
@@ -85,11 +87,14 @@ def main():
 
     print(f"✅ Сохранено: {OUT_PATH}")
     print(f"   Недель: {len(result_weeks)}")
-    # Диагностика: покажем первые 3 поля первого профиля — должны быть плоскими
     if result_weeks:
-        sample = dict(list(result_weeks[0]["profile"].items())[:3])
-        print(f"   Пример profile[0]: {sample}")
-        print(f"   Ключи недели[0]: {list(result_weeks[0].keys())}")
+        w0 = result_weeks[0]
+        print(f"   Ключи недели[0]: {list(w0.keys())}")
+        # Проверка формы: profile обёрнут в {value, confidence}
+        f0 = list(w0["profile"].items())[0]
+        print(f"   Пример profile[0]['{f0[0]}']: {f0[1]}")
+        # Проверка: ровно 3 гипотезы
+        print(f"   Гипотез в неделе[0]: {len(w0['hypotheses'])}")
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ fi
 
 # ── 2. /run: обрабатывает запрос? ────────────────────────
 echo "[2/7] POST /run (может занять до 15 минут)..."
-HTTP=$(curl -s -o /tmp/pre_demo_run.json -w "%{http_code}" --max-time 1800 \
+HTTP=$(curl -s -o /tmp/case3_dev.json -w "%{http_code}" --max-time 1800 \
     -X POST "$STEND/run" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
@@ -41,13 +41,13 @@ if [ "$HTTP" = "200" ]; then
     echo "  ✅ 200 OK"
 else
     echo "  ❌ HTTP $HTTP"
-    head -c 500 /tmp/pre_demo_run.json
+    head -c 500 /tmp/case3_dev.json
     exit 1
 fi
 
 # ── 3. 30 недель в ответе? ───────────────────────────────
 echo "[3/7] Количество недель..."
-WEEKS=$(python -c "import json; print(len(json.load(open('/tmp/pre_demo_run.json'))['weeks']))" 2>/dev/null || echo "0")
+WEEKS=$(python -c "import json; print(len(json.load(open('/tmp/case3_dev.json'))['weeks']))" 2>/dev/null || echo "0")
 if [ "$WEEKS" = "30" ]; then
     echo "  ✅ weeks=30"
 else
@@ -59,7 +59,7 @@ fi
 echo "[4/7] Формат profile (плоский vs обёртка)..."
 FLAT=$(python -c "
 import json
-d = json.load(open('/tmp/pre_demo_run.json'))
+d = json.load(open('/tmp/case3_dev.json'))
 p = d['weeks'][0]['profile']
 v = p['chronotype']
 print('flat' if isinstance(v, str) else 'wrapped')
@@ -74,7 +74,7 @@ fi
 # ── 5. Валидация схемы ──────────────────────────────────
 echo "[5/7] Валидация против profile_fields_schema..."
 mkdir -p data
-cp /tmp/pre_demo_run.json data/run_response.json
+cp /tmp/case3_dev.json data/run_response.json
 if python validate_local.py 2>&1 | grep -q "✅"; then
     echo "  ✅ 30/30 профилей прошли схему"
 else

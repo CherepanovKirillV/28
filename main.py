@@ -1,18 +1,19 @@
 """
 FastAPI-приложение для хакатона (кейс 3: анализ профиля здоровья).
 
-КЛЮЧЕВЫЕ ПРИНЦИПЫ:
-1. Никогда не отдавать 500 на /run — падение одной недели не должно
-   убивать остальные 29 (0 очков за краш хуже, чем 0 очков за пустой ответ).
-2. Память < 512 МБ — все большие объекты освобождаем сразу (del + gc.collect).
-3. Формат ответа соответствует profile_fields_schema:
-      profile — ПЛОСКИЕ значения (schema-compliant)
-      confidence — отдельно (для скоринга)
-      hypotheses + rationale — текст для пользователя
+ПРИНЦИПЫ:
+1. Никогда не отдавать 500 на /run — падение одной недели не убивает остальные.
+2. Память < 512 МБ — большие объекты освобождаем через del + gc.collect.
+3. Ответ соответствует Case3Answers.schema.json:
+      profile.<field> = {value, confidence}
+      hypotheses = ровно 3 × {text, confidence}
+      в неделе ТОЛЬКО record_id, profile, hypotheses
+      value = "unknown", если confidence == 0
 """
 import gc
 import logging
 import os
+import re
 
 import pandas as pd
 import requests
@@ -31,45 +32,84 @@ TEAM = os.environ.get("TEAM", "team28")
 HACK_API_URL = os.environ.get("HACK_API_URL", "https://hack-api.be-healthy.tech").rstrip("/")
 
 
-# ──────────────────────────────────────────────────────────────
-# Вспомогательная функция сборки недели в правильный формат.
-# Вынесена отдельно, чтобы не дублировать в try и except.
-# ──────────────────────────────────────────────────────────────
-def _pack_week(rid: str, profile: dict, hypotheses: list[dict]) -> dict:
-    """
-    Преобразует внутренний формат calculator в формат ответа /run.
+# ─────────────────────────────────────────────────────────────
+# Справочники допустимых значений по Case3Answers.schema.json.
+# Нужны, чтобы если calculator вернёт опечатку (например "midnight"
+# вместо "00:00"), она превратилась в "unknown", а не сломала схему.
+# ─────────────────────────────────────────────────────────────
+_ENUM_FIELDS = {
+    "chronotype":      {"early", "intermediate", "late"},
+    "activity_level":  {"low", "medium", "high"},
+    "sedentary_hours": {"lt6", "6to9", "gt9"},
+    "training_days":   {"0", "1to2", "3plus"},
+    "movement_index":  {"lt50", "50to70", "70to85", "85plus"},
+}
+_BOOL_FIELDS = {"social_jetlag", "works_from_home", "phone_before_sleep"}
+_TIME_FIELDS = {"weekday_bedtime", "weekday_wake_time"}
+_TIME_PATTERN = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 
-    ВНУТРИ: {"chronotype": {"value": "early", "confidence": 0.85}}
-    НАРУЖУ: {"chronotype": "early"}  — потому что схема profile_fields_schema
-            требует ПЛОСКИЕ значения, а не обёртку {value, confidence}.
-    Уверенность сохраняем отдельным словарём — для скоринга +1 / +0.5.
-    """
-    plain_profile = {field: val["value"] for field, val in profile.items()}
-    confidences = {field: val["confidence"] for field, val in profile.items()}
-    # rationale — на случай, если платформа ждёт строку (как в reference в dev.json)
-    rationale_text = " ".join(h["text"] for h in hypotheses if h.get("text"))
+
+def _normalize_value(field: str, value, confidence: float):
+    if confidence == 0:
+        return "unknown"
+
+    if field in _ENUM_FIELDS:
+        return value if value in _ENUM_FIELDS[field] else "unknown"
+
+    if field in _BOOL_FIELDS:
+        return value if isinstance(value, bool) else "unknown"
+
+    if field in _TIME_FIELDS:
+        return value if isinstance(value, str) and _TIME_PATTERN.match(value) else "unknown"
+
+    if field == "average_sleep_hours":
+        try:
+            v = float(value)
+            return v if 0.0 <= v <= 24.0 else "unknown"
+        except (TypeError, ValueError):
+            return "unknown"
+
+    return value  # неизвестное поле — пропускаем как есть (страховка на будущее)
+
+def _pack_week(rid: str, profile: dict, hypotheses: list[dict]) -> dict:
+    normalized_profile = {}
+    for field, val in profile.items():
+        conf = max(0.0, min(1.0, float(val["confidence"])))
+        normalized_profile[field] = {
+            "value": _normalize_value(field, val["value"], conf),
+            "confidence": conf,
+        }
+
+    # Нормализуем гипотезы до 3 штук {text, confidence}
+    hyps = []
+    for h in (hypotheses or [])[:3]:
+        txt = str(h.get("text", "")).strip()
+        if not txt:
+            continue
+        c = max(0.0, min(1.0, float(h.get("confidence", 0.5))))
+        hyps.append({"text": txt[:500], "confidence": c})
+
+    # Добиваем безопасной, если пришло меньше 3
+    _SAFE = {
+        "text": "Твой режим дня имеет особенности, которые можно мягко скорректировать.",
+        "confidence": 0.5,
+    }
+    while len(hyps) < 3:
+        hyps.append(dict(_SAFE))
 
     return {
         "record_id": rid,
-        "profile": plain_profile,          # ← соответствует profile_fields_schema
-        "confidence": confidences,         # ← отдельно, для скоринга
-        "hypotheses": hypotheses,          # ← массив из 3 гипотез (наш формат)
-        "rationale": rationale_text[:2000],# ← строка (defensive, совместимость с reference)
+        "profile": normalized_profile,
+        "hypotheses": hyps,
     }
 
 
-# ──────────────────────────────────────────────────────────────
-# Health check
-# ──────────────────────────────────────────────────────────────
 @app.get("/")
 @app.get("/health")
 def health():
     return {"team": TEAM, "status": "ok"}
 
 
-# ──────────────────────────────────────────────────────────────
-# Основной эндпоинт
-# ──────────────────────────────────────────────────────────────
 @app.post("/run")
 async def run_endpoint(request: Request):
     # ── 1. Разбор запроса ────────────────────────────────────
@@ -102,7 +142,7 @@ async def run_endpoint(request: Request):
         logger.error("Parse error: %s", type(e).__name__)
         raise HTTPException(status_code=500, detail="Internal error")
 
-    # ── 3. Извлечение полей и освобождение памяти ────────────
+    # ── 3. Извлечение полей + освобождение памяти ────────────
     try:
         ds = data["dataset"]
         weeks = ds["weeks"]
@@ -114,7 +154,6 @@ async def run_endpoint(request: Request):
 
     users = {u["user_id"]: u.get("timezone", "Europe/Moscow") for u in users_list}
 
-    # del + gc.collect: data — огромный dict (~9 МБ JSON), держать не нужно
     del users_list
     del data
     gc.collect()
@@ -161,23 +200,18 @@ async def run_endpoint(request: Request):
             )
             week_df = df.loc[mask].copy()
 
-            # Расчёт 11 полей (внутри — обёртки {value, confidence})
             profile = calculator.calculate_profile(
                 week_df, tz, week["start_date"], week["end_date_exclusive"]
             )
-
-            # Генерация 3 гипотез (LLM + fallback + пост-фильтр)
             hypotheses = llm_generator.generate_hypotheses(profile)
 
-            # Пост-фильтр: если LLM намусорила — заменяем fallback-ом
             if not llm_generator.validate_output(profile, hypotheses):
                 logger.warning("Validation failed for %s, using fallback", rid)
                 hypotheses = llm_generator._get_fallback_hypotheses(profile)
 
-            # ФИКС: раздеваем profile, чтобы прошёл profile_fields_schema
             result_weeks.append(_pack_week(rid, profile, hypotheses))
 
-            del week_df  # освобождаем срез — он больше не нужен
+            del week_df
         except Exception as e:
             # Одна неделя упала — теряем только её, не все 30.
             logger.error("Week %s failed: %s", rid, type(e).__name__)
@@ -185,8 +219,6 @@ async def run_endpoint(request: Request):
             fb_hypotheses = llm_generator._get_fallback_hypotheses(fb_profile)
             result_weeks.append(_pack_week(rid, fb_profile, fb_hypotheses))
 
-        # gc.collect после каждой недели — освобождаем временные объекты
         gc.collect()
 
-    # ── 6. Отдача ответа ─────────────────────────────────────
     return JSONResponse(content={"weeks": result_weeks})

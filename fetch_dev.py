@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 
 DATASET_CODE = "case3-dev-v1"
-OUT_PATH = Path("data") / "dev.json"
+OUT_PATH = Path("data") / "case3_dev.json"
 CHUNK_SIZE = 64 * 1024
 TIMEOUT = 120
 

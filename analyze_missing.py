@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Анализ отсутствующих источников и prior-распределений.
 Помогает решить, какие поля можно "soft guess" с conf=0.5.
@@ -12,7 +11,7 @@ from pathlib import Path
 import explore_dev as ex
 import calculator as calc
 
-DATA_PATH = Path(__file__).resolve().parent / "data" / "dev.json"
+DATA_PATH = Path(__file__).resolve().parent / "data" / "case3_dev.json"
 
 TOL_TIME_MIN = 30
 TOL_HOURS = 0.5
