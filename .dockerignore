@@ -19,3 +19,5 @@ inspect_schema.py
 token_monitor.py
 .DS_Store
 *.log
+
+# sudo docker ps -a | grep team28

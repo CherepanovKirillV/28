@@ -1,5 +1,5 @@
 # python:3.10-slim — минимальный образ без компиляторов и dev-пакетов
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
