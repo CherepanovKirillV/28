@@ -35,7 +35,7 @@ _PLACEHOLDER: dict[str, Any] = {
 # Калибровка для ТОЧНЫХ ответов (когда данные есть)
 _CONFIDENCE: dict[str, float] = {
     "chronotype": 0.70,
-    "weekday_bedtime": 0.00,
+    "weekday_bedtime": 0.50,
     "weekday_wake_time": 0.85,
     "average_sleep_hours": 0.85,  # Обновлено: accuracy 96%
     "social_jetlag": 0.70,
