@@ -24,15 +24,15 @@ data/
 .DS_Store
 
 # Dev-утилиты (не идут в образ)
-fetch_dev.py
-analyze_dev.py
-explore.py
-calibrate.py
-analyze_missing.py
-explore_dev.py
-fetch_dev.py
-local_test.py
-generate_local_response.py
-validate_local.py
-inspect_schema.py
-token_monitor.py    
+# fetch_dev.py
+# analyze_dev.py
+# explore.py
+# calibrate.py
+# analyze_missing.py
+# explore_dev.py
+# fetch_dev.py
+# local_test.py
+# generate_local_response.py
+# validate_local.py
+# inspect_schema.py
+# token_monitor.py    
