@@ -1,9 +1,12 @@
-# Sain Case 3 — фаза 0
+# Sain Case 3 — React-интерфейс
 
-Минимальный frontend-scaffold без дизайна. Эта папка закрывает только задачи фазы 0:
+Первая часть визуального интерфейса профиля недели по предоставленному макету:
 
-- **FE-01:** React + TypeScript + Vite; mock JSON по структуре ответа кейса 3.
-- **FE-02:** зафиксированный контракт `answers[]`, `week_id`, 11 полей профиля и ровно 3 гипотезы.
+- 11 карточек заполняются из `weeks[].profile`;
+- три гипотезы берутся из `weeks[].hypotheses`;
+- можно переключаться между всеми неделями ответа;
+- `confidence` управляет прогрессом карточек и знака Сэйн;
+- `unknown` отображается как отсутствие данных.
 
 ## Запуск
 
@@ -23,18 +26,28 @@ pnpm test
 pnpm run build
 ```
 
+## Backend API
+
+Типизированные методы для `GET /`, `GET /health` и `POST /run` находятся в
+`src/api/client.ts`. Адрес бэкенда задаётся через `VITE_API_BASE_URL`. В dev переменную
+можно оставить пустой: Vite проксирует `/run` и `/health` на `http://localhost:8000`.
+
+При открытии страницы фронтенд автоматически отправляет `POST /run`. Код датасета
+задаётся через `VITE_DATASET_CODE` (по умолчанию `case3-dev-v1`). Bearer-токен хранится
+только на бэкенде в `HACK_TEAM_TOKEN` и не попадает в браузерный JavaScript.
+
 ## Контракт для backend
 
-Полный пример находится в `public/mock/case3-answers.json`, типы и runtime-проверка — в
-`src/contracts/case3.ts`.
+Типы актуального ответа `/run` находятся в `src/api/types.ts`; исходный mock и его
+runtime-проверка сохранены отдельно для тестов контракта.
 
-Корень ответа:
+Корень ответа `/run`:
 
 ```json
 {
-  "answers": [
+  "weeks": [
     {
-      "week_id": "case3-dev-week-001",
+      "record_id": "case3-dev-week-001",
       "profile": {
         "chronotype": { "value": "late", "confidence": 0.91 }
       },
@@ -50,7 +63,7 @@ pnpm run build
 
 Правила:
 
-- `week_id` — непустая строка;
+- `record_id` — непустая строка;
 - в `profile` обязательны все 11 ключей из `PROFILE_FIELD_KEYS`;
 - `value` — строка, число или строка `unknown`;
 - `confidence` — число от 0 до 1;
