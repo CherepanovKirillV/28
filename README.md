@@ -1,5 +1,5 @@
 1. Запуск.
-docker build -t team28:latest . && docker run -d --name team28_app \
+sudo docker build -t team28:latest . && sudo docker run -d --name team28_app \
   -p 8000:8000 --memory=512m --memory-swap=512m \
   -e LLM_API_KEY="$LLM_API_KEY" team28:latest
 curl -i http://localhost:8000/health   # 200 OK
