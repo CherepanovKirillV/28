@@ -13,6 +13,7 @@ git clone https://github.com/CherepanovKirillV/28.git && cd 28
 # ── Обязательные ────────────────────────────────────────
 TEAM=team28
 LLM_API_KEY=твой_токен_прокси_нейросети
+HACK_TEAM_TOKEN=токен_команды_для_Hack_API
 
 # ── Необязательные (есть значения по умолчанию) ────────
 LLM_BASE_URL=https://bifrost.be-healthy.tech/v1

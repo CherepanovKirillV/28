@@ -30,6 +30,7 @@ app = FastAPI()
 
 TEAM = os.environ.get("TEAM", "team28")
 HACK_API_URL = os.environ.get("HACK_API_URL", "https://hack-api.be-healthy.tech").rstrip("/")
+HACK_TEAM_TOKEN = os.environ.get("HACK_TEAM_TOKEN", "").strip()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -121,9 +122,14 @@ async def run_endpoint(request: Request):
     case = body.get("case")
     dataset_code = body.get("dataset_code")
     auth = request.headers.get("Authorization")
+    if not auth and HACK_TEAM_TOKEN:
+        auth = HACK_TEAM_TOKEN if HACK_TEAM_TOKEN.lower().startswith("bearer ") else f"Bearer {HACK_TEAM_TOKEN}"
 
     if not case or not dataset_code or not auth:
-        raise HTTPException(status_code=400, detail="Missing case, dataset_code, or Authorization")
+        raise HTTPException(
+            status_code=400,
+            detail="Missing case, dataset_code, or Authorization/HACK_TEAM_TOKEN",
+        )
 
     # ── 2. Скачивание данных с API хакатона ──────────────────
     try:
